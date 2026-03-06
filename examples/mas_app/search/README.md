@@ -78,72 +78,70 @@ python scripts/prepare_drmas_search_data.py \
 - `expected_answer`
 - `expected_answers`
 
-### 3) 启动 OpenSearch 检索服务（FastAPI `/retrieve`）
+### 3) 启动 DrMAS SearchR1 本地检索服务
+
+由于 `faiss-gpu` 无法通过 pip 安装，我们需要为本地检索服务器设置独立的 conda 环境。该服务器大约会使用每个 GPU 6GB 的显存，请在训练配置中考虑这一点。
+
+#### 3.1) 创建 Retriever conda 环境
 
 ```bash
-python scripts/run_opensearch_retrieval_service.py \
-  --host 0.0.0.0 \
-  --port 18080 \
-  --opensearch-url http://127.0.0.1:9200 \
-  --index drmas_search_docs \
-  --fields contents,content,text \
-  --auto-create-index
+conda create -n retriever python=3.10 -y
+conda activate retriever
+
+conda install numpy==1.26.4
+pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+pip install transformers datasets pyserini huggingface_hub
+conda install faiss-gpu==1.8.0 -c pytorch -c nvidia -y
+pip install uvicorn fastapi
 ```
 
-说明：
-- 检索接口地址即 `http://127.0.0.1:18080/retrieve`
-- 请求体兼容本项目 SearchClient：`{"query":"...", "topk":3, "return_scores":true}`
-- 你的 OpenSearch 文档至少需要有 `contents/content/text` 其中一个字段
+#### 3.2) 下载索引与语料
+
+```bash
+conda activate retriever
+
+local_dir=~/data/searchR1
+python scripts/searchr1_download.py --local_dir $local_dir
+cat $local_dir/part_* > $local_dir/e5_Flat.index
+gzip -d $local_dir/wiki-18.jsonl.gz
+```
+
+#### 3.3) 启动本地 e5 检索服务
+
+```bash
+conda activate retriever
+
+# 将输出重定向到文件以避免终端混乱
+# 我们发现输出到终端会导致服务器响应时间出现峰值
+python scripts/retrieval_server.py \
+  --index_path $local_dir/e5_Flat.index \
+  --corpus_path $local_dir/wiki-18.jsonl \
+  --topk 3 \
+  --retriever_name e5 \
+  --retriever_model intfloat/e5-base-v2 \
+  --faiss_gpu \
+  --port 8010 \
+  > retrieval_server.log
+```
 
 将检索 URL 写入环境变量（推荐）：
 
 ```bash
-export SEARCH_MAS_RETRIEVAL_SERVICE_URL=http://127.0.0.1:18080/retrieve
+export SEARCH_MAS_RETRIEVAL_SERVICE_URL=http://127.0.0.1:8010/retrieve
 ```
 
 可用以下命令快速验证：
 
 ```bash
-curl -X POST http://127.0.0.1:18080/retrieve \
+curl -X POST http://127.0.0.1:8010/retrieve \
   -H "Content-Type: application/json" \
-  -d '{"query":"Who won the 2022 FIFA World Cup?","topk":3,"return_scores":true}'
+  -d '{"query":"Who won the 2022 FIFA World Cup?","topk":3}'
 ```
 
-### 3.1) 一键部署 DrMAS 原生 SearchR1 本地检索服务（可选）
-
-如果你希望复用 `DrMAS/README.md` 第 112-129 行的检索服务部署方式（下载 `wiki-18` 索引与语料并启动本地检索服务），可直接运行：
-
-```bash
-bash scripts/deploy_searchr1_retrieval_service.sh
-```
-
-说明：
-- 该脚本封装了：创建 `retriever` conda 环境并安装依赖（`numpy/torch/faiss-gpu/uvicorn/fastapi` 等）、下载索引与语料、合并 `part_*` 为 `e5_Flat.index`、解压 `wiki-18.jsonl.gz`、启动 `/retrieve` 服务。
-- 默认使用 `conda` 环境 `retriever`、数据目录 `/data1/lll/datasets/wiki-18`、端口 `8010`、模型 `/data1/lll/models/e5-base-v2`，日志写入 `retrieval_server.log`。
-- 推荐通过环境变量配置：
-
-```bash
-export SEARCH_MAS_SEARCHR1_LOCAL_DIR=/data1/lll/datasets/wiki-18
-export SEARCH_MAS_SEARCHR1_PORT=8010
-export SEARCH_MAS_SEARCHR1_RETRIEVER_MODEL=/data1/lll/models/e5-base-v2
-export SEARCH_MAS_RETRIEVAL_SERVICE_URL=http://127.0.0.1:${SEARCH_MAS_SEARCHR1_PORT}/retrieve
-```
-
-- 也可通过命令参数覆盖（命令参数优先级高于环境变量）：
-
-```bash
-bash scripts/deploy_searchr1_retrieval_service.sh \
-  --local-dir /data1/lll/datasets/wiki-18 \
-  --conda-env retriever \
-  --port 8010 \
-  --retriever-model /data1/lll/models/e5-base-v2 \
-  --log-file retrieval_server.log
-```
-
-- 若你已手动准备好环境，可加 `--skip-env-setup` 跳过 conda 环境创建与依赖安装。
-- 若环境已存在但希望重装依赖，可加 `--force-env-setup`。
-- 若使用该服务，建议设置 `export SEARCH_MAS_RETRIEVAL_SERVICE_URL=http://127.0.0.1:8010/retrieve`（或使用你自定义的端口）。
-- 与上面的 OpenSearch 检索服务是替代关系，二选一即可。
+**注意**：
+- 若你已手动准备好环境和数据，也可使用一键部署脚本：`bash scripts/deploy_searchr1_retrieval_service.sh`
+- 该脚本默认使用数据目录 `~/data/searchR1`、端口 `8010`、模型 `intfloat/e5-base-v2`
+- 支持通过环境变量 `SEARCH_MAS_SEARCHR1_LOCAL_DIR`、`SEARCH_MAS_SEARCHR1_PORT`、`SEARCH_MAS_SEARCHR1_RETRIEVER_MODEL` 自定义配置
 
 ### 4) 配置环境变量（OpenAI / vLLM）
 
