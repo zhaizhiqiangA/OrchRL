@@ -1,0 +1,80 @@
+application:
+  type: search
+  max_turns: 4
+  force_final_answer_on_max_turn: true
+
+llm:
+  # Prefer configuring LLM backend via environment variables (see README).
+  # Primary vars: SEARCH_MAS_LLM_BASE_URL / SEARCH_MAS_LLM_API_KEY / SEARCH_MAS_LLM_MODEL
+  # Compatible aliases: OPENAI_BASE_URL / OPENAI_API_KEY / OPENAI_MODEL
+  base_url: ${SEARCH_MAS_LLM_BASE_URL}
+  api_key: ${SEARCH_MAS_LLM_API_KEY}
+  timeout: 120
+  max_retries: 3
+  retry_backoff_sec: 1.0
+  # Default model; can still be overridden by each agent.
+  model: ${SEARCH_MAS_LLM_MODEL}
+  temperature: 0.6
+  top_p: 0.95
+  max_tokens: 1536
+
+search:
+  provider: http
+  # Prefer environment variable:
+  #   SEARCH_MAS_RETRIEVAL_SERVICE_URL=http://127.0.0.1:18080/retrieve
+  retrieval_service_url: ${SEARCH_MAS_RETRIEVAL_SERVICE_URL}
+  topk: 3
+  return_scores: true
+  timeout: 30
+  max_retries: 3
+  retry_backoff_sec: 1.0
+
+agents:
+  verifier:
+    # Optional per-agent backend override. If omitted, inherit from top-level `llm`.
+    llm:
+      # base_url: http://127.0.0.1:8000/v1
+      # api_key: ${SEARCH_MAS_VERIFIER_LLM_API_KEY}
+      # model: ${SEARCH_MAS_VERIFIER_LLM_MODEL}
+      # timeout: 120
+      # max_retries: 3
+      # retry_backoff_sec: 1.0
+    temperature: 0.2
+    top_p: 0.95
+    max_tokens: 1024
+  searcher:
+    # Optional per-agent backend override.
+    llm:
+      # base_url: http://127.0.0.1:8001/v1
+      # api_key: ${SEARCH_MAS_SEARCHER_LLM_API_KEY}
+      # model: ${SEARCH_MAS_SEARCHER_LLM_MODEL}
+      # timeout: 120
+      # max_retries: 3
+      # retry_backoff_sec: 1.0
+    temperature: 0.6
+    top_p: 0.95
+    max_tokens: 1024
+  answerer:
+    # Optional per-agent backend override.
+    llm:
+      # base_url: http://127.0.0.1:8002/v1
+      # api_key: ${SEARCH_MAS_ANSWERER_LLM_API_KEY}
+      # model: ${SEARCH_MAS_ANSWERER_LLM_MODEL}
+      # timeout: 120
+      # max_retries: 3
+      # retry_backoff_sec: 1.0
+    temperature: 0.4
+    top_p: 0.95
+    max_tokens: 1536
+
+data:
+  input_path: ~/data/drmas_search_mas/test_sampled.parquet
+
+output:
+  prediction_path: ./outputs/search_predictions.jsonl
+  report_path: ./outputs/search_report.json
+  include_trace: true
+
+validation:
+  # false: exact match (EM), true: substring EM
+  use_substring_em: false
