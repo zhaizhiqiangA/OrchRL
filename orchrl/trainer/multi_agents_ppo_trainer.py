@@ -265,7 +265,7 @@ class MultiAgentsPPOTrainer:
             credit_assignment=self.mate_config.get("credit_assignment", self.mate_config.get("reward", {}).get("credit_assignment", "all_turns")),
         )
 
-    def _require_expected_mate_policy_batches(self, gen_batch_output_per_policy):
+    def _resolve_mate_policy_batches(self, gen_batch_output_per_policy):
         expected_policy_names = list(self.ppo_trainer_dict.keys())
         actual_policy_names = list(gen_batch_output_per_policy.keys())
         if not actual_policy_names:
@@ -273,13 +273,29 @@ class MultiAgentsPPOTrainer:
                 "MATE rollout produced no policy batches; all rollout episodes likely failed before returning trajectories."
             )
 
+        present_policy_names = [
+            model_name for model_name in expected_policy_names if model_name in gen_batch_output_per_policy
+        ]
         missing_policy_names = [
             model_name for model_name in expected_policy_names if model_name not in gen_batch_output_per_policy
         ]
+        return present_policy_names, missing_policy_names
+
+    def _require_expected_mate_policy_batches(self, gen_batch_output_per_policy):
+        _, missing_policy_names = self._resolve_mate_policy_batches(gen_batch_output_per_policy)
         if missing_policy_names:
+            actual_policy_names = list(gen_batch_output_per_policy.keys())
             raise RuntimeError(
                 f"MATE rollout missing policy batches for {missing_policy_names}; available policies: {actual_policy_names}"
             )
+
+    @staticmethod
+    def _build_mate_policy_presence_metrics(present_policy_names, missing_policy_names):
+        return {
+            "training/present_policy_count": len(present_policy_names),
+            "training/skipped_policy_count": len(missing_policy_names),
+            "training/skipped_policies": ",".join(missing_policy_names),
+        }
 
     def fit_one_collect_phase_for_test(self):
         return self._collect_mate_step_batches(step_idx=self.global_steps)
@@ -616,8 +632,8 @@ class MultiAgentsPPOTrainer:
             pprint(f"step {self.global_steps} started")
             
             batch_per_trainer: Dict[str,DataProto]={}
-            for model_name in self.ppo_trainer_dict.keys():
-                batch_per_trainer[model_name] = DataProto.from_dict({})  # Placeholder
+            present_policy_names = []
+            missing_policy_names = []
                 
             metrics = {}
             timing_raw = {}
@@ -638,14 +654,30 @@ class MultiAgentsPPOTrainer:
                         colorful_print(f"Step {self.global_steps}: Using base model for trajectory collection (LoRA not trained yet)", "yellow")
 
                     gen_batch_output_per_policy = self._collect_mate_step_batches(step_idx=self.global_steps)
-                    self._require_expected_mate_policy_batches(gen_batch_output_per_policy)
+                    present_policy_names, missing_policy_names = self._resolve_mate_policy_batches(gen_batch_output_per_policy)
+                    metrics.update(
+                        self._build_mate_policy_presence_metrics(
+                            present_policy_names=present_policy_names,
+                            missing_policy_names=missing_policy_names,
+                        )
+                    )
+                    if missing_policy_names:
+                        colorful_print(
+                            (
+                                "Warning: MATE rollout missing policy batches for "
+                                f"{missing_policy_names}; skipping updates for these policies this step. "
+                                f"Available policies: {present_policy_names}"
+                            ),
+                            "yellow",
+                        )
 
-                    for model_name, trainer in self.ppo_trainer_dict.items():
+                    for model_name in present_policy_names:
+                        trainer = self.ppo_trainer_dict[model_name]
                         dp_world_size = trainer.actor_rollout_wg.world_size
                         batch_per_trainer_temp = self._pad_dataproto_to_world_size(
                             gen_batch_output_per_policy[model_name], dp_world_size
                         )
-                        if batch_per_trainer[model_name].batch is None:
+                        if model_name not in batch_per_trainer or batch_per_trainer[model_name].batch is None:
                             batch_per_trainer[model_name] = batch_per_trainer_temp
                         else:
                             batch_per_trainer[model_name] = DataProto.concat([
@@ -655,7 +687,8 @@ class MultiAgentsPPOTrainer:
                 
                 timing_raw = {}
                 with simple_timer("update_parameters", timing_raw):
-                    for model_name, trainer in self.ppo_trainer_dict.items():
+                    for model_name in present_policy_names:
+                        trainer = self.ppo_trainer_dict[model_name]
                         if model_name in batch_per_trainer and batch_per_trainer[model_name].batch is not None:
                             batch_per_trainer[model_name] = self._finalize_batch_for_update(
                                 batch_per_trainer[model_name],
@@ -678,21 +711,21 @@ class MultiAgentsPPOTrainer:
                     
                 
                     # Update trainers
-                    for model_name, trainer in self.ppo_trainer_dict.items():
-                        if model_name in gen_batch_output_per_policy:
-                            result = update_single_trainer(model_name, batch_per_trainer[model_name], trainer)
-                            
-                            # Merge timing metrics
-                            for key, value in result["timing"].items():
-                                timing_raw[key] = max(timing_raw.get(key, 0), value)
-                            
-                            # Merge trainer metrics by agent
-                            trainer_metrics = result["metrics"]
+                    for model_name in present_policy_names:
+                        trainer = self.ppo_trainer_dict[model_name]
+                        result = update_single_trainer(model_name, batch_per_trainer[model_name], trainer)
                         
+                        # Merge timing metrics
+                        for key, value in result["timing"].items():
+                            timing_raw[key] = max(timing_raw.get(key, 0), value)
+                        
+                        # Merge trainer metrics by agent
+                        trainer_metrics = result["metrics"]
+                    
 
-                            # Replace the trainer's batch with the updated version for downstream metrics
-                            if "updated_batch" in result and result["updated_batch"] is not None:
-                                batch_per_trainer[model_name] = result["updated_batch"]
+                        # Replace the trainer's batch with the updated version for downstream metrics
+                        if "updated_batch" in result and result["updated_batch"] is not None:
+                            batch_per_trainer[model_name] = result["updated_batch"]
                     
                     metrics.update(all_trainer_metrics)
                     
@@ -705,7 +738,8 @@ class MultiAgentsPPOTrainer:
             # TODO: collect metrics
             # Use the first trainer's batch for metrics calculation
     
-            for model_name, batch in batch_per_trainer.items():
+            for model_name in present_policy_names:
+                batch = batch_per_trainer[model_name]
                 for metric_name, metric_value in compute_data_metrics(batch=batch, use_critic=any(trainer.use_critic for trainer in self.ppo_trainer_dict.values())).items():
                     metric_name_policy= model_name + "_" + metric_name
                     metrics[metric_name_policy] = metric_value
