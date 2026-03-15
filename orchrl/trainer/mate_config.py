@@ -21,11 +21,14 @@ def validate_mate_config(mate_cfg: Any, agent_policy_mapping: Mapping[str, str] 
     config_dict = _to_plain_dict(mate_cfg)
     roles = config_dict.get("roles")
     role_policy_mapping = config_dict.get("role_policy_mapping")
+    rollout_mode = config_dict.get("rollout_mode", "parallel")
 
     if not isinstance(roles, list) or not roles:
         raise ValueError("mate.roles must be a non-empty list")
     if not isinstance(role_policy_mapping, dict) or not role_policy_mapping:
         raise ValueError("mate.role_policy_mapping must be a non-empty dict")
+    if rollout_mode not in {"parallel", "tree"}:
+        raise ValueError("mate.rollout_mode must be either 'parallel' or 'tree'")
 
     known_policies = set((agent_policy_mapping or {}).values())
     for role in roles:
@@ -37,4 +40,16 @@ def validate_mate_config(mate_cfg: Any, agent_policy_mapping: Mapping[str, str] 
         if policy_name not in known_policies:
             raise ValueError(f"unknown policy in mate.role_policy_mapping: {policy_name}")
 
+    tree_cfg = config_dict.get("tree", {})
+    k_branches = tree_cfg.get("k_branches", config_dict.get("k_branches"))
+    max_concurrent_branches = tree_cfg.get(
+        "max_concurrent_branches",
+        config_dict.get("max_concurrent_branches"),
+    )
+    if k_branches is not None and int(k_branches) < 1:
+        raise ValueError("mate.tree.k_branches must be >= 1")
+    if max_concurrent_branches is not None and int(max_concurrent_branches) < 1:
+        raise ValueError("mate.tree.max_concurrent_branches must be >= 1")
+
+    config_dict["rollout_mode"] = rollout_mode
     return config_dict

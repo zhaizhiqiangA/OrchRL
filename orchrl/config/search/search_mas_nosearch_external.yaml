@@ -101,6 +101,10 @@ training:
       answerer: answerer_model
     batch_size: ${training.train_batch_size}
     n_samples_per_prompt: ${training.train_sample_num}
+    rollout_mode: parallel
+    tree:
+      k_branches: 3
+      max_concurrent_branches: 2
     max_concurrent_episodes: 2
     timeout: 120
     backend_timeout: 120

@@ -9,6 +9,7 @@ from aiohttp import web
 
 from .backend import BACKEND_URL_OVERRIDE_KEY, InferenceBackend
 from .datatypes import InteractionRecord, ModelMappingEntry, ModelRequest
+from .replay_cache import ReplayCache
 
 
 class ModelMonitor:
@@ -17,10 +18,12 @@ class ModelMonitor:
         backend: InferenceBackend,
         model_mapping: dict[str, ModelMappingEntry],
         episode_id: str | None = None,
+        replay_cache: ReplayCache | None = None,
     ) -> None:
         self._backend = backend
         self._model_mapping = model_mapping
         self._episode_id = episode_id or uuid.uuid4().hex
+        self._replay_cache = replay_cache
 
         self._buffer: list[InteractionRecord] = []
         self._turn_counters: dict[str, int] = {}
@@ -111,10 +114,18 @@ class ModelMonitor:
             generation_params=generation_params,
         )
 
-        try:
-            response = await self._backend.generate(model_request)
-        except Exception as exc:
-            return web.json_response({"error": str(exc)}, status=502)
+        response = None
+        replayed = False
+        if self._replay_cache is not None:
+            response = self._replay_cache.lookup(agent_role, turn_index, messages)
+            replayed = response is not None
+
+        if response is None:
+            try:
+                response = await self._backend.generate(model_request)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=502)
+
         record = InteractionRecord(
             agent_role=agent_role,
             turn_index=turn_index,
@@ -126,7 +137,7 @@ class ModelMonitor:
             logprobs=response.logprobs,
             finish_reason=response.finish_reason,
             episode_id=self._episode_id,
-            metadata={},
+            metadata={"replayed": True} if replayed else {},
         )
         with self._state_lock:
             if generation_snapshot == self._buffer_generation:

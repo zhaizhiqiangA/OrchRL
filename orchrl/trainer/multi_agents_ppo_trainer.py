@@ -12,7 +12,7 @@ from tqdm import tqdm
 import numpy as np
 import torch
 from omegaconf import OmegaConf, open_dict
-from orchrl.trainer.mate_dataproto_adapter import episodes_to_policy_batches
+from orchrl.trainer.mate_dataproto_adapter import episodes_to_policy_batches, tree_episodes_to_policy_batches
 from orchrl.trainer.mate_config import validate_mate_config
 from orchrl.trainer.mate_prompt_loader import MatePromptLoader
 from orchrl.trainer.mate_reward_bridge import build_reward_provider
@@ -255,7 +255,8 @@ class MultiAgentsPPOTrainer:
             max_response_length = next(iter(self.ppo_trainer_dict.values())).config.data.max_response_length
 
         role_names = list(self.agent_policy_mapping.keys()) if getattr(self, "agent_policy_mapping", None) else list(self.mate_config["role_policy_mapping"].keys())
-        return episodes_to_policy_batches(
+        adapter_fn = tree_episodes_to_policy_batches if self._mate_rollout_mode() == "tree" else episodes_to_policy_batches
+        return adapter_fn(
             episodes=episodes,
             tokenizer_dict=self.tokenizer_dict,
             role_policy_mapping=self.mate_config["role_policy_mapping"],
@@ -264,6 +265,11 @@ class MultiAgentsPPOTrainer:
             max_response_length=max_response_length,
             credit_assignment=self.mate_config.get("credit_assignment", self.mate_config.get("reward", {}).get("credit_assignment", "all_turns")),
         )
+
+    def _mate_rollout_mode(self) -> str:
+        if not self.mate_config:
+            return "parallel"
+        return str(self.mate_config.get("rollout_mode", "parallel"))
 
     def _resolve_mate_policy_batches(self, gen_batch_output_per_policy):
         expected_policy_names = list(self.ppo_trainer_dict.keys())
@@ -285,8 +291,11 @@ class MultiAgentsPPOTrainer:
         _, missing_policy_names = self._resolve_mate_policy_batches(gen_batch_output_per_policy)
         if missing_policy_names:
             actual_policy_names = list(gen_batch_output_per_policy.keys())
-            raise RuntimeError(
-                f"MATE rollout missing policy batches for {missing_policy_names}; available policies: {actual_policy_names}"
+            colorful_print(
+                "MATE rollout produced partial policy batches; "
+                f"missing={missing_policy_names}, available={actual_policy_names}. "
+                "Skipping updates for missing policies in this step.",
+                "yellow",
             )
 
     @staticmethod
@@ -296,6 +305,9 @@ class MultiAgentsPPOTrainer:
             "training/skipped_policy_count": len(missing_policy_names),
             "training/skipped_policies": ",".join(missing_policy_names),
         }
+
+    def _has_real_batch(self, batch) -> bool:
+        return batch is not None and getattr(batch, "batch", None) is not None
 
     def fit_one_collect_phase_for_test(self):
         return self._collect_mate_step_batches(step_idx=self.global_steps)
@@ -677,11 +689,12 @@ class MultiAgentsPPOTrainer:
                         batch_per_trainer_temp = self._pad_dataproto_to_world_size(
                             gen_batch_output_per_policy[model_name], dp_world_size
                         )
-                        if model_name not in batch_per_trainer or batch_per_trainer[model_name].batch is None:
+                        existing_batch = batch_per_trainer.get(model_name)
+                        if not self._has_real_batch(existing_batch):
                             batch_per_trainer[model_name] = batch_per_trainer_temp
                         else:
                             batch_per_trainer[model_name] = DataProto.concat([
-                                    batch_per_trainer[model_name], 
+                                    existing_batch,
                                     batch_per_trainer_temp
                                 ])
                 
@@ -689,7 +702,7 @@ class MultiAgentsPPOTrainer:
                 with simple_timer("update_parameters", timing_raw):
                     for model_name in present_policy_names:
                         trainer = self.ppo_trainer_dict[model_name]
-                        if model_name in batch_per_trainer and batch_per_trainer[model_name].batch is not None:
+                        if model_name in batch_per_trainer and self._has_real_batch(batch_per_trainer[model_name]):
                             batch_per_trainer[model_name] = self._finalize_batch_for_update(
                                 batch_per_trainer[model_name],
                                 trainer,
@@ -737,9 +750,9 @@ class MultiAgentsPPOTrainer:
 
             # TODO: collect metrics
             # Use the first trainer's batch for metrics calculation
-    
-            for model_name in present_policy_names:
-                batch = batch_per_trainer[model_name]
+            for model_name, batch in batch_per_trainer.items():
+                if not self._has_real_batch(batch):
+                    continue
                 for metric_name, metric_value in compute_data_metrics(batch=batch, use_critic=any(trainer.use_critic for trainer in self.ppo_trainer_dict.values())).items():
                     metric_name_policy= model_name + "_" + metric_name
                     metrics[metric_name_policy] = metric_value
@@ -877,7 +890,7 @@ class MultiAgentsPPOTrainer:
 
 
     def _validate(self, global_steps=0):
-        episodes = self._collect_mate_episodes(step_idx=global_steps)
+        episodes = self._flatten_validation_episodes(self._collect_mate_episodes(step_idx=global_steps))
         role_policy_mapping = self.mate_config.get("role_policy_mapping", {})
         role_names = list(role_policy_mapping.keys())
         total_rollout_num = len(episodes)
@@ -931,6 +944,20 @@ class MultiAgentsPPOTrainer:
             self._save_best_checkpoint(env_success_rate)
             
         return validation_metrics
+
+    def _flatten_validation_episodes(self, episodes):
+        if self._mate_rollout_mode() != "tree":
+            return episodes
+
+        flattened = []
+        for tree_episode in episodes:
+            flattened.append(tree_episode.pilot_result)
+            flattened.extend(
+                branch.episode_result
+                for branch in tree_episode.branch_results
+                if branch.episode_result.status == "success"
+            )
+        return flattened
     
     def _pad_dataproto_to_world_size(self, batch, world_sizes):
         batch, pad_size = pad_dataproto_to_divisor(batch, world_sizes)

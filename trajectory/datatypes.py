@@ -67,3 +67,21 @@ class EpisodeResult:
     rewards: dict[str, float | list[float]]
     final_reward: float | None
     metadata: dict[str, Any] = field(default_factory=dict)
+    status: str = "success"
+    failure_info: dict[str, Any] | None = None
+
+
+@dataclass
+class BranchResult:
+    episode_result: EpisodeResult
+    branch_turn: int
+    branch_agent_role: str
+    parent_episode_id: str
+
+
+@dataclass
+class TreeEpisodeResult:
+    pilot_result: EpisodeResult
+    branch_results: list[BranchResult]
+    prompt: str
+    tree_metadata: dict[str, Any] = field(default_factory=dict)

@@ -1,0 +1,49 @@
+application:
+  type: search
+  max_turns: 4
+  force_final_answer_on_max_turn: true
+
+llm:
+  base_url: http://127.0.0.1:8000/v1
+  api_key: EMPTY
+  timeout: 120
+  max_retries: 3
+  retry_backoff_sec: 1.0
+  model: placeholder
+  temperature: 0.6
+  top_p: 0.95
+  max_tokens: 1536
+
+search:
+  provider: http
+  retrieval_service_url: http://127.0.0.1:8010/retrieve
+  topk: 3
+  return_scores: true
+  timeout: 30
+  max_retries: 3
+  retry_backoff_sec: 1.0
+
+agents:
+  verifier:
+    llm: {}
+    temperature: 0.2
+    top_p: 0.95
+    max_tokens: 1024
+  searcher:
+    llm: {}
+    temperature: 0.6
+    top_p: 0.95
+    max_tokens: 1024
+  answerer:
+    llm: {}
+    temperature: 0.4
+    top_p: 0.95
+    max_tokens: 1536
+
+output:
+  prediction_path: ./outputs/search_predictions.jsonl
+  report_path: ./outputs/search_report.json
+  include_trace: true
+
+validation:
+  use_substring_em: false

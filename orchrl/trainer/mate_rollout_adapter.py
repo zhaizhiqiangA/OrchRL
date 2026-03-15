@@ -8,7 +8,14 @@ from typing import Any
 from omegaconf import OmegaConf
 import yaml
 
-from trajectory import AgentPipeConfig, ModelMappingEntry, VLLMBackend, parallel_rollout
+from trajectory import (
+    AgentPipeConfig,
+    ModelMappingEntry,
+    TreeEpisodeResult,
+    VLLMBackend,
+    parallel_rollout,
+    tree_rollout,
+)
 
 
 def _to_plain_dict(config: Any) -> dict[str, Any]:
@@ -55,6 +62,17 @@ class MateRolloutAdapter:
         self._n_samples_per_prompt = int(self._config.get("n_samples_per_prompt", sampling_cfg.get("n_samples_per_prompt", 1)))
         max_concurrent = self._config.get("max_concurrent_episodes", sampling_cfg.get("max_concurrent_episodes"))
         self._max_concurrent_episodes = int(max_concurrent) if max_concurrent is not None else None
+        self._rollout_mode = str(self._config.get("rollout_mode", "parallel"))
+        tree_cfg = self._config.get("tree", {})
+        k_branches = tree_cfg.get("k_branches", self._config.get("k_branches", 1))
+        max_concurrent_branches = tree_cfg.get(
+            "max_concurrent_branches",
+            self._config.get("max_concurrent_branches"),
+        )
+        self._k_branches = int(k_branches)
+        self._max_concurrent_branches = (
+            int(max_concurrent_branches) if max_concurrent_branches is not None else None
+        )
 
     async def collect_step_rollouts(self, step_idx: int):
         prompts = self._prompt_loader.get_step_batch(step_idx=step_idx, batch_size=self._batch_size)
@@ -95,6 +113,18 @@ class MateRolloutAdapter:
             "sample_idx": job["sample_idx"],
         }
         reward_provider = _JobAwareRewardProvider(self._reward_provider, job_metadata)
+        if self._rollout_mode == "tree":
+            result = await tree_rollout(
+                prompt=job["prompt_item"]["prompt"],
+                reward_provider=reward_provider,
+                config=pipe_config,
+                backend=backend,
+                k_branches=self._k_branches,
+                max_concurrent_branches=self._max_concurrent_branches,
+            )
+            self._annotate_tree_result(result, job_metadata)
+            return [result]
+
         results = await parallel_rollout(
             prompts=[job["prompt_item"]["prompt"]],
             reward_provider=reward_provider,
@@ -172,3 +202,13 @@ class MateRolloutAdapter:
         if not isinstance(loaded, dict):
             raise ValueError("mate config template must load as a dict")
         return loaded
+
+    @staticmethod
+    def _annotate_tree_result(result: TreeEpisodeResult, metadata: dict[str, Any]) -> None:
+        def annotate_episode(episode_result) -> None:
+            episode_result.metadata.update(metadata)
+            episode_result.trajectory.metadata.update(metadata)
+
+        annotate_episode(result.pilot_result)
+        for branch in result.branch_results:
+            annotate_episode(branch.episode_result)

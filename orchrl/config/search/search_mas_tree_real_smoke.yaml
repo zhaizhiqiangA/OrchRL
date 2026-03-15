@@ -1,0 +1,119 @@
+defaults:
+- search_mas_nosearch_external
+- _self_
+
+resource:
+  n_gpus_per_node: 3
+
+base_models:
+  policy_0:
+    path: /data1/lll/models/Qwen3-0.6B
+    name: verifier_model
+  policy_1:
+    path: /data1/lll/models/Qwen3-0.6B
+    name: searcher_model
+  policy_2:
+    path: /data1/lll/models/Qwen3-0.6B
+    name: answerer_model
+
+training:
+  total_training_steps: 2
+  project_name: orchrl
+  experiment_name: search_mas_tree_real_smoke
+  logger:
+  - console
+  model_checkpoints_dir: checkpoints/search_mas_tree_real_smoke
+  train_batch_size: 1
+  train_sample_num: 1
+  validate_sample_num: 1
+  val_freq: 1
+  max_prompt_length: 2048
+  max_response_length: 1024
+  if_save: false
+  mate:
+    rollout_mode: tree
+    tree:
+      k_branches: 1
+      max_concurrent_branches: 1
+    max_concurrent_episodes: 1
+    timeout: 180
+    backend_timeout: 180
+    mas_work_dir: examples/mas_app/search
+    mas_command_template: python scripts/run_search_mas.py --config {config_path} --question {prompt}
+    config_template_path: orchrl/config/search/templates/search_mas_tree_real_smoke_template.yaml
+    prompt_loader:
+      source_type: jsonl
+      path: orchrl/config/search/data/search_mas_tree_real_smoke_prompts.jsonl
+      prompt_keys: [question, prompt, query, problem, input]
+      expected_keys: [expected_answer, answer, expected_answers, gold_answer, golden_answers, target, label]
+
+models:
+  model_0:
+    ppo_trainer_config:
+      actor_rollout_ref:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
+        actor:
+          ppo_mini_batch_size: 1
+          ppo_micro_batch_size: 1
+          ppo_micro_batch_size_per_gpu: 1
+          ppo_max_token_len_per_gpu: 4096
+        rollout:
+          gpu_memory_utilization: 0.6
+          max_model_len: 4096
+          enforce_eager: true
+      critic:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
+  model_1:
+    ppo_trainer_config:
+      actor_rollout_ref:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
+        actor:
+          ppo_mini_batch_size: 1
+          ppo_micro_batch_size: 1
+          ppo_micro_batch_size_per_gpu: 1
+          ppo_max_token_len_per_gpu: 4096
+        rollout:
+          gpu_memory_utilization: 0.6
+          max_model_len: 4096
+          enforce_eager: true
+      critic:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
+  model_2:
+    ppo_trainer_config:
+      actor_rollout_ref:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
+        actor:
+          ppo_mini_batch_size: 1
+          ppo_micro_batch_size: 1
+          ppo_micro_batch_size_per_gpu: 1
+          ppo_max_token_len_per_gpu: 4096
+        rollout:
+          gpu_memory_utilization: 0.6
+          max_model_len: 4096
+          enforce_eager: true
+      critic:
+        model:
+          use_remove_padding: false
+          override_config:
+            _attn_implementation: eager
+            _attn_implementation_internal: eager
