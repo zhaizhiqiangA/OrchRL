@@ -17,7 +17,8 @@ def _config_get(config: Any, key: str):
 
 
 def _legacy_model_name(model_path: str) -> str:
-    return "/".join(str(model_path).split("/")[-2:])
+    return model_path
+    # return "/".join(str(model_path).split("/")[-2:])
 
 
 

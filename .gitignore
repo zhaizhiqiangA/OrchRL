@@ -6,3 +6,4 @@ dist/
 build/
 *.log
 .pytest_cache/
+outputs/

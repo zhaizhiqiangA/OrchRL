@@ -51,10 +51,10 @@ actor_rollout_ref:
     trust_remote_code: False
   actor:
     _target_: verl.workers.config.FSDPActorConfig
+    rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: fsdp  # [fsdp, fsdp2], This is for backward-compatibility
     ppo_mini_batch_size: 16  # 减小PPO mini batch大小以节省内存
     use_dynamic_bsz: True
-    use_dynamic_mini_batch: False
     ppo_micro_batch_size: 4 # will be deprecated, use ppo_micro_batch_size_per_gpu
     ppo_micro_batch_size_per_gpu: 49152
     ppo_max_token_len_per_gpu: 8192 # n * ${data.max_prompt_length} + ${data.max_response_length}
@@ -76,6 +76,11 @@ actor_rollout_ref:
     checkpoint:
       contents: ['model', 'optimizer', 'extra']  # with 'hf_model' you can save whole model as hf format, now only use sharded model checkpoint to save space
     optim:
+      _target_: verl.workers.config.FSDPOptimizerConfig
+      optimizer: AdamW
+      optimizer_impl: torch.optim
+      betas: [0.9, 0.999]
+      override_optimizer_config: {}
       lr: 1e-6
       lr_warmup_steps: -1 # Prioritized. Negative values mean delegating to lr_warmup_steps_ratio.
       lr_warmup_steps_ratio: 0.  # the total steps will be injected during runtime
@@ -96,7 +101,6 @@ actor_rollout_ref:
       reshard_after_forward: True # only for fsdp2, [True, False, int between 1 and fsdp_size]
       fsdp_size: -1
       model_dtype: bf16
-    grad_norm_threshold: 1e5
       
 
   ref:
@@ -121,18 +125,12 @@ actor_rollout_ref:
     ulysses_sequence_parallel_size: 1 # sp size
     entropy_from_logits_with_chunking: False
   rollout:
-    enable_lora: False
-    max_loras: 1
-    max_lora_rank: 0
     name: vllm
-    _target_: verl.workers.config.RolloutConfig
+    _target_: verl.workers.config.RolloutConfig    
     mode: async # sync: LLM, async: AsyncLLM
-    chat_scheduler: verl.schedulers.completions_scheduler.CompletionsScheduler # async chat scheduler, e.g verl.schedulers.naive_chat_scheduler.NaiveChatCompletionScheduler
-    chat_template: null
     temperature: 0.6
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
     top_p: 1
-    use_fire_sampling: False # https://arxiv.org/abs/2410.21236
     prompt_length: ${data.max_prompt_length} # not use for opensource
     response_length: ${data.max_response_length}
     # for vllm rollout
@@ -144,6 +142,8 @@ actor_rollout_ref:
     load_format: auto  
     layered_summon: False # for huge model, layered summon can save memory (prevent OOM) but make it slower
     tensor_model_parallel_size: 4
+    data_parallel_size: 1
+    pipeline_model_parallel_size: 1
     max_num_batched_tokens: 8192 #
     max_model_len: null  
     max_num_seqs: 64
@@ -174,12 +174,6 @@ actor_rollout_ref:
       max_turns: 4 # null for no limit (default max_length // 3)
       tool_config_path: null  # null for no tool
       format: chatml  # chatml, more formats will be supported in the future
-    # RLLM Arguments
-    disable_logging: True # Disable logging for vLLM async rollout.
-    entropy_from_logits_with_chunking: False
-    use_torch_compile: False
-    #compilation_config:
-    #  use_inductor: False
     
     # [Experimental] agent loop based rollout configs
     agent:
@@ -204,6 +198,28 @@ actor_rollout_ref:
         path: null
         # Class name of the custom async server class (e.g. AsyncvLLMServer)
         name: null
+
+    # prometheus configuration for vllm/sglang server mode
+    prometheus:
+      _target_: verl.workers.config.PrometheusConfig
+      # whether enable prometheus on server mode rollout
+      enable: false
+      # Port number that Prometheus listens on, default is 9090
+      port: 9090
+      # Path to Prometheus configuration file
+      file: /tmp/ray/session_latest/metrics/prometheus/prometheus.yml
+      # Specify served_model_name to avoid displaying overly long model paths in Grafana
+      served_model_name: ${oc.select:actor_rollout_ref.model.path,null}
+
+    # Checkpoint engine config for updating weights from trainer to rollout
+    checkpoint_engine:
+      _target_: verl.workers.config.CheckpointEngineConfig
+      # Backend for checkpoint engine: naive, nccl, nixl, hccl
+      backend: naive
+      # Bucket size in MB to transfer multiple weights at one time
+      update_weights_bucket_megabytes: 2048
+      # Additional keyword arguments to pass to the checkpoint engine constructor
+      engine_kwargs: {}
 
 critic:
   _target_: verl.workers.config.FSDPCriticConfig
@@ -327,6 +343,7 @@ critic:
 
 reward_model:
   enable: False
+  use_reward_loop: False
   strategy: fsdp
   model:
     input_tokenizer: ~/models/deepseek-llm-7b-chat  # set this to null if the chat template is identical

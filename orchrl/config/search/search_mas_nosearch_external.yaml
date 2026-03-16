@@ -127,11 +127,15 @@ models:
       filter_method: uid
       filter_ratio: 0.0
       data:
+        train_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
+        val_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
         max_prompt_length: ${training.max_prompt_length}
         max_response_length: ${training.max_response_length}
       actor_rollout_ref:
         model:
           path: ${base_models.policy_0.path}
+          override_config:
+            model_id: ${base_models.policy_0.name}
         rollout:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}
@@ -147,11 +151,15 @@ models:
       filter_method: uid
       filter_ratio: 0.0
       data:
+        train_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
+        val_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
         max_prompt_length: ${training.max_prompt_length}
         max_response_length: ${training.max_response_length}
       actor_rollout_ref:
         model:
           path: ${base_models.policy_1.path}
+          override_config:
+            model_id: ${base_models.policy_1.name}          
         rollout:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}
@@ -167,11 +175,15 @@ models:
       filter_method: uid
       filter_ratio: 0.0
       data:
+        train_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
+        val_files: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
         max_prompt_length: ${training.max_prompt_length}
         max_response_length: ${training.max_response_length}
       actor_rollout_ref:
         model:
           path: ${base_models.policy_2.path}
+          override_config:
+            model_id: ${base_models.policy_2.name}
         rollout:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}

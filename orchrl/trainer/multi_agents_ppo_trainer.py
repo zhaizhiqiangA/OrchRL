@@ -21,7 +21,6 @@ from verl import DataProto
 from verl.protocol import pad_dataproto_to_divisor
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from verl.trainer.ppo.ray_trainer import (
-
     RayWorkerGroup,
     ResourcePoolManager,
     Role,
@@ -30,11 +29,10 @@ from verl.trainer.ppo.ray_trainer import (
     compute_data_metrics,
     compute_timing_metrics,
     reduce_metrics,
+    RayPPOTrainer,
+    apply_kl_penalty
 )
-from verl.ray_trainer import apply_kl_penalty
 from verl.trainer.ppo import core_algos
-
-from verl.ray_trainer import RayPPOTrainer
 from verl.utils.torch_functional import pad_sequence_to_length
 from typing import Dict
 from orchrl.utils.performance import simple_timer,colorful_print
@@ -126,20 +124,6 @@ class MultiAgentsPPOTrainer:
             raise ValueError(f"Model '{model_name}' missing ppo_trainer_config")
         
         ppo_config = model_config.ppo_trainer_config
-        with open_dict(ppo_config.actor_rollout_ref.rollout):
-            ppo_config.actor_rollout_ref.rollout.served_model_name = model_name
-        ppo_config.actor_rollout_ref.model.lora_rank = config.get("lora_rank", 0)
-        ppo_config.actor_rollout_ref.model.lora_alpha = config.get("lora_alpha", 16)
-        if ppo_config.actor_rollout_ref.model.lora_rank > 0:
-            print("Enabling LoRA in single PPO trainer")
-            ppo_config.actor_rollout_ref.rollout.enable_lora = True
-            ppo_config.actor_rollout_ref.rollout.max_loras = self.lora_num
-            ppo_config.trainer.experiment_name = config.training.experiment_name
-            ppo_config.actor_rollout_ref.rollout.max_lora_rank = config.get("lora_rank", 0)
-        else:
-            ppo_config.actor_rollout_ref.rollout.enable_lora = False
-            ppo_config.actor_rollout_ref.rollout.max_loras = 0
-            ppo_config.actor_rollout_ref.rollout.max_lora_rank = 0
         self.ppo_trainer_config_dict[model_name] = ppo_config
         ppo_config.data["train_batch_size"] = config.training.train_batch_size
         
@@ -167,22 +151,9 @@ class MultiAgentsPPOTrainer:
                 continue
             
             ppo_config = model_config.ppo_trainer_config
-            with open_dict(ppo_config.actor_rollout_ref.rollout):
-                ppo_config.actor_rollout_ref.rollout.served_model_name = model_name
             self.ppo_trainer_config_dict[model_name] = ppo_config
             ppo_config.data["train_batch_size"] = config.training.train_batch_size
-            ppo_config.actor_rollout_ref.model.lora_rank = config.get("lora_rank", 0)
-            ppo_config.actor_rollout_ref.model.lora_alpha = config.get("lora_alpha", 16)
             ppo_config.trainer.experiment_name = config.training.experiment_name
-            
-            if ppo_config.actor_rollout_ref.model.lora_rank > 0:
-                ppo_config.actor_rollout_ref.rollout.enable_lora = True
-                ppo_config.actor_rollout_ref.rollout.max_loras = self.lora_num if hasattr(self, 'lora_num') else 1
-                ppo_config.actor_rollout_ref.rollout.max_lora_rank = config.get("lora_rank", 0)
-            else:
-                ppo_config.actor_rollout_ref.rollout.enable_lora = False
-                ppo_config.actor_rollout_ref.rollout.max_loras = 0
-                ppo_config.actor_rollout_ref.rollout.max_lora_rank = 0
             
             ppo_trainer = RayPPOTrainer(
                 config=ppo_config,
@@ -198,12 +169,14 @@ class MultiAgentsPPOTrainer:
 
     def init_mate_rollout_runtime(self):
         self.rollout_engine_dict = {}
+        self.checkpoint_manager_dict = {}
         self.tokenizer_dict = {}
         self.server_address_dict = {}
         self.policy_server_name_mapping = {}
-        
+
         for model_name, trainer in self.ppo_trainer_dict.items():
             self.rollout_engine_dict[model_name] = trainer.async_rollout_manager
+            self.checkpoint_manager_dict[model_name] = trainer.checkpoint_manager
             self.tokenizer_dict[model_name] = trainer.tokenizer
             rollout_engine = trainer.async_rollout_manager
             server_address_list = getattr(rollout_engine, "server_addresses", [])
@@ -236,13 +209,13 @@ class MultiAgentsPPOTrainer:
         )
 
     def _collect_mate_episodes(self, step_idx: int):
-        for _, rollout_engine in self.rollout_engine_dict.items():
-            rollout_engine.wake_up()
+        for _, checkpoint_manager in self.checkpoint_manager_dict.items():
+            checkpoint_manager.update_weights()
         try:
             return asyncio.run(self.mate_rollout_adapter.collect_step_rollouts(step_idx=step_idx))
         finally:
-            for _, rollout_engine in self.rollout_engine_dict.items():
-                rollout_engine.sleep()
+            for _, checkpoint_manager in self.checkpoint_manager_dict.items():
+                checkpoint_manager.sleep_replicas()
 
     def _collect_mate_step_batches(self, step_idx: int):
         episodes = self._collect_mate_episodes(step_idx=step_idx)
@@ -323,10 +296,9 @@ class MultiAgentsPPOTrainer:
         for idx, (model_name, trainer) in enumerate(self.ppo_trainer_dict.items(), 1):
             colorful_print(f"[{idx}/{len(self.ppo_trainer_dict)}] Initializing workers for: {model_name}", "blue")
             if self.lora_differ_mode:
-                    trainer.init_workers(lora_num=self.lora_num, agent_lora_mapping=self.agent_lora_mapping)
-                    colorful_print(f"  Initialized with {self.lora_num} LoRA adapters for multi-agent training", "cyan")
+                raise Exception('lora differ mode to be supported.')
             else:
-                trainer.init_workers(lora_num=self.lora_num)
+                trainer.init_workers()
             colorful_print(f"✓ [{idx}/{len(self.ppo_trainer_dict)}] Successfully initialized: {model_name}", "green")
         
         colorful_print(f"All {len(self.ppo_trainer_dict)} trainers initialized successfully!", "green")
