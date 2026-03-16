@@ -50,7 +50,7 @@ def train_multi_agents(config):
     from omegaconf import OmegaConf
     from verl.utils.fs import copy_local_path_from_hdfs
     from verl.utils import hf_tokenizer, hf_processor
-    from orchrl.verl.ray_trainer import ResourcePoolManager, Role
+    from verl.ray_trainer import ResourcePoolManager, Role
     from copy import deepcopy
     # Build agent_policy_mapping for validation
     agent_policy_mapping = {}

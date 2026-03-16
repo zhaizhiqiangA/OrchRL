@@ -31,10 +31,10 @@ from verl.trainer.ppo.ray_trainer import (
     compute_timing_metrics,
     reduce_metrics,
 )
-from orchrl.verl.ray_trainer import apply_kl_penalty
+from verl.ray_trainer import apply_kl_penalty
 from verl.trainer.ppo import core_algos
 
-from orchrl.verl.ray_trainer import RayPPOTrainer
+from verl.ray_trainer import RayPPOTrainer
 from verl.utils.torch_functional import pad_sequence_to_length
 from typing import Dict
 from orchrl.utils.performance import simple_timer,colorful_print

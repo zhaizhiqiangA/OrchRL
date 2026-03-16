@@ -23,8 +23,6 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
   exit 1
 fi
 
-source "$REPO_ROOT/scripts/utils/export_repo_pythonpath.sh"
-
 if ! eval "$(CONFIG_DIR="$CONFIG_DIR" CONFIG_NAME="$CONFIG_NAME" python3 - <<'PY'
 import os
 import shlex
