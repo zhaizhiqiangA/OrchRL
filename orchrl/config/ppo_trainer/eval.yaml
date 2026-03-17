@@ -54,9 +54,9 @@ actor_rollout_ref:
     rollout_n: ${oc.select:actor_rollout_ref.rollout.n,1}
     strategy: fsdp  # [fsdp, fsdp2], This is for backward-compatibility
     ppo_mini_batch_size: 16  # 减小PPO mini batch大小以节省内存
-    use_dynamic_bsz: True
-    ppo_micro_batch_size: 4 # will be deprecated, use ppo_micro_batch_size_per_gpu
-    ppo_micro_batch_size_per_gpu: 49152
+    use_dynamic_bsz: False  # 禁用动态批次，避免所有序列被打包到单个micro-batch导致OOM
+    ppo_micro_batch_size: null  # 不能和ppo_micro_batch_size_per_gpu同时设置
+    ppo_micro_batch_size_per_gpu: 1  # 每张GPU每次处理1个样本，最大限度降低显存峰值
     ppo_max_token_len_per_gpu: 8192 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
     # pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
@@ -135,10 +135,10 @@ actor_rollout_ref:
     response_length: ${data.max_response_length}
     # for vllm rollout
     dtype: bfloat16
-    gpu_memory_utilization: 0.6  
+    gpu_memory_utilization: 0.4
     ignore_eos: False
     enforce_eager: False  
-    free_cache_engine: False
+    free_cache_engine: True # 设为true才会卸载kv cache
     load_format: auto  
     layered_summon: False # for huge model, layered summon can save memory (prevent OOM) but make it slower
     tensor_model_parallel_size: 4
@@ -178,7 +178,7 @@ actor_rollout_ref:
     # [Experimental] agent loop based rollout configs
     agent:
       # Number of agent loop workers
-      num_workers: 64
+      num_workers: 4
       
       # custom agent loop config path, which should contain list of configs to intialize AgentLoop instances.
       # https://hydra.cc/docs/advanced/instantiate_objects/overview/
@@ -506,9 +506,10 @@ ray_kwargs:
 
   # configs related to ray initialization
   ray_init:
-  
+
     # Number of CPUs for Ray. Use a fixed number instead of null when using SLURM.
     num_cpus: null
+    object_store_memory: 10000000000  # 限制Ray对象存储为10GB，避免过度占用RAM
 
   # Path to save Ray timeline JSON for performance profiling
   timeline_json_file: null

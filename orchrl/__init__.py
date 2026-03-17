@@ -52,7 +52,7 @@ async def launch_servers(self):
         )
         # append model_id to server name if model_id is specified in model_config
         if 'override_config' in self.model_config and 'model_id' in self.model_config.override_config:
-            name += f'_{self.model_config.override_config['model_id']}'
+            name += f'_{self.model_config.override_config["model_id"]}'
         server = self.server_class.options(
             scheduling_strategy=ray.util.scheduling_strategies.NodeAffinitySchedulingStrategy(
                 node_id=node_id,
