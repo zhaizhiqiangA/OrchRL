@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .datatypes import EpisodeTrajectory, InteractionRecord, TurnData
+from ..datatypes import EpisodeTrajectory, InteractionRecord, TurnData
 
 
 class TrajectoryCollector:
@@ -26,11 +26,14 @@ class TrajectoryCollector:
             agent_role=record.agent_role,
             turn_index=record.turn_index,
             messages=record.messages,
-            prompt_ids=record.prompt_ids,
             response_text=record.response_text,
             token_ids=record.token_ids,
             logprobs=record.logprobs,
             finish_reason=record.finish_reason,
             timestamp=record.timestamp,
+            prompt_ids=record.prompt_ids,
+            replayed=bool(metadata.get("replayed", False)),
+            branch_phase=metadata.get("branch_phase"),
+            routed_experts=metadata.get("routed_experts"),
             metadata=metadata,
         )

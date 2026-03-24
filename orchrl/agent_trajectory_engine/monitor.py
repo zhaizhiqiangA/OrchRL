@@ -3,25 +3,17 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+from collections.abc import Mapping
 from typing import Any
 
 from aiohttp import web
 
+from ._support.diagnostics import build_drift_artifact
+from ._support.renderer import ChatRenderer
+from ._support.replay_cache import ReplayCache
+from ._support.validator import validate_runtime_request, validate_runtime_response
 from .backend import BACKEND_URL_OVERRIDE_KEY, InferenceBackend
 from .datatypes import InteractionRecord, ModelMappingEntry, ModelRequest
-from .replay_cache import ReplayCache
-
-_OPENAI_FINISH_REASONS = {"stop", "length", "tool_calls", "content_filter", "function_call"}
-
-
-def _normalize_finish_reason(finish_reason: str | None) -> str:
-    if not isinstance(finish_reason, str) or not finish_reason:
-        return "stop"
-    if finish_reason in {"completed", "aborted"}:
-        return "stop"
-    if finish_reason in _OPENAI_FINISH_REASONS:
-        return finish_reason
-    return "stop"
 
 
 class ModelMonitor:
@@ -31,11 +23,16 @@ class ModelMonitor:
         model_mapping: dict[str, ModelMappingEntry],
         episode_id: str | None = None,
         replay_cache: ReplayCache | None = None,
+        renderer: ChatRenderer | Mapping[str, ChatRenderer] | None = None,
     ) -> None:
         self._backend = backend
         self._model_mapping = model_mapping
         self._episode_id = episode_id or uuid.uuid4().hex
         self._replay_cache = replay_cache
+        if isinstance(renderer, Mapping):
+            self._renderer = dict(renderer)
+        else:
+            self._renderer = renderer
 
         self._buffer: list[InteractionRecord] = []
         self._turn_counters: dict[str, int] = {}
@@ -124,8 +121,16 @@ class ModelMonitor:
             agent_role=agent_role,
             messages=messages,
             generation_params=generation_params,
-            session_id=self._build_session_id(agent_role),
+            sampling_fingerprint=dict(generation_params),
         )
+        renderer = self._resolve_renderer(agent_role)
+        if renderer is not None and model_request.prompt_ids is None:
+            prompt_ids, render_fingerprint = renderer.render(
+                messages,
+                add_generation_prompt=True,
+            )
+            model_request.prompt_ids = prompt_ids
+            model_request.render_fingerprint = render_fingerprint
 
         response = None
         replayed = False
@@ -135,11 +140,38 @@ class ModelMonitor:
 
         if response is None:
             try:
+                if model_request.prompt_ids is not None:
+                    validate_runtime_request(model_request)
                 response = await self._backend.generate(model_request)
+                if model_request.prompt_ids is not None:
+                    validate_runtime_response(response)
+            except Exception as exc:
+                return web.json_response({"error": str(exc)}, status=502)
+        elif model_request.prompt_ids is not None:
+            try:
+                validate_runtime_response(response)
             except Exception as exc:
                 return web.json_response({"error": str(exc)}, status=502)
 
-        finish_reason = _normalize_finish_reason(response.finish_reason)
+        metadata = dict(getattr(response, "runtime_metadata", {}))
+        if response.routed_experts is not None:
+            metadata["routed_experts"] = response.routed_experts
+        if model_request.prompt_ids is not None:
+            metadata.setdefault(
+                "drift_artifact",
+                build_drift_artifact(
+                    messages=messages,
+                    runtime_prompt_ids=response.prompt_ids or model_request.prompt_ids,
+                    rerendered_prompt_ids=model_request.prompt_ids,
+                    response_ids=response.token_ids,
+                    response_logprobs=response.logprobs,
+                    render_fingerprint=model_request.render_fingerprint,
+                    sampling_fingerprint=model_request.sampling_fingerprint,
+                ),
+            )
+        if replayed:
+            metadata["replayed"] = True
+
         record = InteractionRecord(
             agent_role=agent_role,
             turn_index=turn_index,
@@ -149,10 +181,10 @@ class ModelMonitor:
             response_text=response.content,
             token_ids=response.token_ids,
             logprobs=response.logprobs,
-            finish_reason=finish_reason,
+            finish_reason=response.finish_reason,
             episode_id=self._episode_id,
-            metadata={"replayed": True} if replayed else {},
-            prompt_ids=response.prompt_ids,
+            prompt_ids=response.prompt_ids or model_request.prompt_ids,
+            metadata=metadata,
         )
         with self._state_lock:
             if generation_snapshot == self._buffer_generation:
@@ -167,11 +199,15 @@ class ModelMonitor:
                 {
                     "index": 0,
                     "message": {"role": "assistant", "content": response.content},
-                    "finish_reason": finish_reason,
+                    "finish_reason": response.finish_reason,
                 }
             ],
         }
         return web.json_response(payload)
 
-    def _build_session_id(self, agent_role: str) -> str:
-        return f"{self._episode_id}:{agent_role}"
+    def _resolve_renderer(self, agent_role: str) -> ChatRenderer | None:
+        if self._renderer is None:
+            return None
+        if isinstance(self._renderer, ChatRenderer):
+            return self._renderer
+        return self._renderer.get(agent_role)

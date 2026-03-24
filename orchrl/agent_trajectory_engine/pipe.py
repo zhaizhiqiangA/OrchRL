@@ -6,15 +6,19 @@ import shlex
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from typing import Any
 
 from .backend import InferenceBackend
-from .collector import TrajectoryCollector
-from .datatypes import EpisodeResult, InteractionRecord, ModelMappingEntry
-from .launcher import MASLauncher
-from .gateway import ModelMonitor
-from .replay_cache import ReplayCache
+from ._support.collector import TrajectoryCollector
+from .datatypes import EpisodeResult, InteractionRecord, ModelMappingEntry, ModelResponse
+from ._support.diagnostics import build_drift_artifact
+from ._support.launcher import MASLauncher
+from .monitor import ModelMonitor
+from ._support.replay_cache import ReplayCache
+from ._support.renderer import ChatRenderer
 from .reward import RewardProvider, RewardWorker
+from ._support.validator import validate_runtime_response
 
 
 @dataclass
@@ -26,6 +30,7 @@ class AgentPipeConfig:
     monitor_host: str = "127.0.0.1"
     monitor_port: int = 0
     mas_work_dir: str | Path | None = None
+    renderer: ChatRenderer | Mapping[str, ChatRenderer] | None = None
 
 
 class AgentPipe:
@@ -57,6 +62,7 @@ class AgentPipe:
             model_mapping=self._config.model_mapping,
             episode_id=episode_id,
             replay_cache=self._replay_cache,
+            renderer=self._config.renderer,
         )
         launcher = MASLauncher(work_dir=self._config.mas_work_dir)
         primary_error: BaseException | None = None
@@ -88,6 +94,7 @@ class AgentPipe:
             if exit_code != 0:
                 self._last_buffer = monitor.get_buffer()
                 if allow_partial:
+                    self._validate_canonical_buffer(self._last_buffer)
                     trajectory = self._collector.build(
                         buffer=self._last_buffer,
                         episode_id=episode_id,
@@ -107,6 +114,7 @@ class AgentPipe:
                 raise RuntimeError(f"MAS process exited with non-zero exit code {exit_code}")
 
             self._last_buffer = monitor.get_buffer()
+            self._validate_canonical_buffer(self._last_buffer)
             trajectory = self._collector.build(buffer=self._last_buffer, episode_id=episode_id)
             result = await asyncio.to_thread(
                 self._reward_worker.compute,
@@ -140,3 +148,32 @@ class AgentPipe:
                     raise stop_error
                 if cleanup_error is not None:
                     raise cleanup_error
+
+    def _validate_canonical_buffer(self, buffer: list[InteractionRecord]) -> None:
+        if self._config.renderer is None:
+            return
+
+        for record in buffer:
+            if record.prompt_ids is None:
+                raise ValueError("runtime prompt_ids are required on canonical token paths")
+            record.metadata.setdefault(
+                "drift_artifact",
+                build_drift_artifact(
+                    messages=record.messages,
+                    runtime_prompt_ids=record.prompt_ids,
+                    rerendered_prompt_ids=record.prompt_ids,
+                    response_ids=record.token_ids,
+                    response_logprobs=record.logprobs,
+                    render_fingerprint=record.metadata.get("render_fingerprint"),
+                    sampling_fingerprint=record.metadata.get("sampling_fingerprint"),
+                ),
+            )
+            validate_runtime_response(
+                ModelResponse(
+                    content=record.response_text,
+                    token_ids=record.token_ids,
+                    logprobs=record.logprobs,
+                    finish_reason=record.finish_reason,
+                    prompt_ids=record.prompt_ids,
+                )
+            )

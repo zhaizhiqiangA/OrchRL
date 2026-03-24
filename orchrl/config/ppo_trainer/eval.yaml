@@ -57,7 +57,7 @@ actor_rollout_ref:
     use_dynamic_bsz: False  # 禁用动态批次，避免所有序列被打包到单个micro-batch导致OOM
     ppo_micro_batch_size: null  # 不能和ppo_micro_batch_size_per_gpu同时设置
     ppo_micro_batch_size_per_gpu: 1  # 每张GPU每次处理1个样本，最大限度降低显存峰值
-    ppo_max_token_len_per_gpu: 8192 # n * ${data.max_prompt_length} + ${data.max_response_length}
+    ppo_max_token_len_per_gpu: 4096 # n * ${data.max_prompt_length} + ${data.max_response_length}
     grad_clip: 1.0
     # pg_losses2 = -advantages * torch.clamp(ratio, 1 - cliprange_low, 1 + cliprange_high)
     clip_ratio: 0.2 # default value if clip_ratio_low and clip_ratio_high are not specified
@@ -121,7 +121,7 @@ actor_rollout_ref:
     log_prob_use_dynamic_bsz: True  # 启用动态批次大小
     ppo_micro_batch_size: 1
     ppo_micro_batch_size_per_gpu: 4  # PPO训练时每张GPU处理4个样本
-    log_prob_max_token_len_per_gpu: 8192  # 与actor保持一致，降低ref/logprob阶段显存压力
+    log_prob_max_token_len_per_gpu: 4096  # 与actor保持一致，降低ref/logprob阶段显存压力
     ulysses_sequence_parallel_size: 1 # sp size
     entropy_from_logits_with_chunking: False
   rollout:
@@ -144,13 +144,13 @@ actor_rollout_ref:
     tensor_model_parallel_size: 4
     data_parallel_size: 1
     pipeline_model_parallel_size: 1
-    max_num_batched_tokens: 8192 #
-    max_model_len: null  
+    max_num_batched_tokens: 4096 #
+    max_model_len: 4096
     max_num_seqs: 64
-    log_prob_micro_batch_size: null
-    log_prob_micro_batch_size_per_gpu: 1
+    log_prob_micro_batch_size: 4 # will be deprecated, use log_prob_micro_batch_size_per_gpu
+    log_prob_micro_batch_size_per_gpu: null
     log_prob_use_dynamic_bsz: False
-    log_prob_max_token_len_per_gpu: 24576
+    log_prob_max_token_len_per_gpu: 4096 # for log_prob computation, usually shorter than rollout max token len, can further reduce memory usage
     disable_log_stats: True
     enable_chunked_prefill: True # may get higher throughput when set to True. When activated, Please increase max_num_batched_tokens or decrease max_model_len.
     # for hf rollout
@@ -364,7 +364,7 @@ reward_model:
   max_length: null
   ulysses_sequence_parallel_size: 1 # sp size
   use_dynamic_bsz: false  
-  forward_max_token_len_per_gpu: 32768
+  forward_max_token_len_per_gpu: 4096
   reward_manager: naive
   launch_reward_fn_async: False # custom reward function executed async on CPU, during log_prob
   sandbox_fusion:

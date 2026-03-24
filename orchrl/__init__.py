@@ -1,6 +1,7 @@
 # Monkey patch a few functions to avoid name collision with multi trainers. In the long run, these changes should be merged to verl.
 
-from verl.workers.rollout.vllm_rollout.vllm_async_server import vLLMReplica
+from packaging import version
+from verl.workers.rollout.vllm_rollout.vllm_async_server import _VLLM_VERSION, vLLMReplica
 from verl.workers.rollout.vllm_rollout.vllm_rollout import ServerAdapter
 from typing import Optional, Any
 import asyncio

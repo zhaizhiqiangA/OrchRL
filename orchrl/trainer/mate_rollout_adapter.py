@@ -7,15 +7,21 @@ from typing import Any
 
 from omegaconf import OmegaConf
 import yaml
+from verl.experimental.agent_loop import AsyncLLMServerManager
 
 from orchrl.agent_trajectory_engine import (
     AgentPipeConfig,
+    ChatRenderer,
+    InferenceBackend,
     ModelMappingEntry,
     TreeEpisodeResult,
     VLLMBackend,
+    VerlBackend,
     parallel_rollout,
     tree_rollout,
 )
+
+_SUPPORTED_BACKEND_MODES = {"canonical", "http"}
 
 
 def _to_plain_dict(config: Any) -> dict[str, Any]:
@@ -27,6 +33,16 @@ def _to_plain_dict(config: Any) -> dict[str, Any]:
             raise TypeError("mate rollout config must resolve to a dict")
         return resolved
     raise TypeError("mate rollout config must be a dict")
+
+
+def _normalize_backend_mode(raw_mode: Any) -> str:
+    normalized = str(raw_mode or "canonical")
+    if normalized not in _SUPPORTED_BACKEND_MODES:
+        raise ValueError(
+            f"unsupported mate.backend_mode={normalized!r}; "
+            f"expected one of {sorted(_SUPPORTED_BACKEND_MODES)}"
+        )
+    return normalized
 
 
 class _JobAwareRewardProvider:
@@ -47,6 +63,8 @@ class MateRolloutAdapter:
         prompt_loader,
         reward_provider,
         server_address_dict,
+        server_handle_dict,
+        tokenizer_dict,
         role_policy_mapping,
         policy_server_name_mapping,
     ):
@@ -54,9 +72,12 @@ class MateRolloutAdapter:
         self._prompt_loader = prompt_loader
         self._reward_provider = reward_provider
         self._server_address_dict = server_address_dict
+        self._server_handle_dict = server_handle_dict
+        self._tokenizer_dict = tokenizer_dict
         self._role_policy_mapping = dict(role_policy_mapping)
         self._policy_server_name_mapping = dict(policy_server_name_mapping)
         self._roles = list(self._config.get("roles", self._role_policy_mapping.keys()))
+        self._backend_mode = _normalize_backend_mode(self._config.get("backend_mode", "canonical"))
         sampling_cfg = self._config.get("sampling", {})
         self._batch_size = int(self._config.get("batch_size", sampling_cfg.get("n_prompts_per_step", 1)))
         self._n_samples_per_prompt = int(self._config.get("n_samples_per_prompt", sampling_cfg.get("n_samples_per_prompt", 1)))
@@ -73,6 +94,7 @@ class MateRolloutAdapter:
         self._max_concurrent_branches = (
             int(max_concurrent_branches) if max_concurrent_branches is not None else None
         )
+        self._actor_manager_dict = self._build_actor_manager_dict() if self._backend_mode == "canonical" else {}
 
     async def collect_step_rollouts(self, step_idx: int):
         prompts = self._prompt_loader.get_step_batch(step_idx=step_idx, batch_size=self._batch_size)
@@ -104,7 +126,7 @@ class MateRolloutAdapter:
             episodes.extend(results)
         return episodes
 
-    async def _collect_single_job(self, *, job, pipe_config: AgentPipeConfig, backend: VLLMBackend):
+    async def _collect_single_job(self, *, job, pipe_config: AgentPipeConfig, backend: InferenceBackend):
         job_metadata = {
             "prompt": job["prompt_item"]["prompt"],
             "expected": job["prompt_item"].get("expected"),
@@ -140,14 +162,22 @@ class MateRolloutAdapter:
 
     def _build_pipe_config(self) -> AgentPipeConfig:
         model_mapping: dict[str, ModelMappingEntry] = {}
+        renderer_mapping: dict[str, ChatRenderer] = {}
         for role in self._roles:
             policy_name = self._role_policy_mapping[role]
-            backend_url = self._select_backend_url(policy_name)
+            backend_url = self._select_backend_url(policy_name) if self._backend_mode == "http" else None
             actual_model = self._policy_server_name_mapping.get(policy_name, policy_name)
             model_mapping[role] = ModelMappingEntry(
                 actual_model=actual_model,
                 backend_url=backend_url,
             )
+
+            tokenizer = self._tokenizer_dict.get(policy_name)
+            if tokenizer is None:
+                if self._backend_mode == "canonical":
+                    raise ValueError(f"No tokenizer configured for canonical MATE policy '{policy_name}'")
+                continue
+            renderer_mapping[role] = ChatRenderer.from_tokenizer(tokenizer, model_name=actual_model)
 
         return AgentPipeConfig(
             mas_command_template=self._config["mas_command_template"],
@@ -157,9 +187,17 @@ class MateRolloutAdapter:
             monitor_host=self._config.get("monitor_host", "127.0.0.1"),
             monitor_port=int(self._config.get("monitor_port", 0)),
             mas_work_dir=Path(self._config["mas_work_dir"]) if self._config.get("mas_work_dir") else None,
+            renderer=renderer_mapping or None,
         )
 
-    def _build_backend(self, pipe_config: AgentPipeConfig) -> VLLMBackend:
+    def _build_backend(self, pipe_config: AgentPipeConfig) -> InferenceBackend:
+        if self._backend_mode == "canonical":
+            return VerlBackend(
+                policy_to_manager=self._actor_manager_dict,
+                policy_to_tokenizer=self._tokenizer_dict,
+                policy_to_actual_model=self._policy_server_name_mapping,
+            )
+
         default_url = next(
             (entry.backend_url for entry in pipe_config.model_mapping.values() if entry.backend_url),
             None,
@@ -170,6 +208,25 @@ class MateRolloutAdapter:
             backend_url=default_url,
             timeout=float(self._config.get("backend_timeout", self._config.get("timeout", 120.0))),
         )
+
+    def _build_actor_manager_dict(self) -> dict[str, AsyncLLMServerManager]:
+        manager_dict: dict[str, AsyncLLMServerManager] = {}
+        for policy_name in sorted(set(self._role_policy_mapping.values())):
+            raw_server_handles = self._server_handle_dict.get(policy_name)
+            if isinstance(raw_server_handles, (list, tuple)):
+                server_handles = list(raw_server_handles)
+            elif raw_server_handles is None:
+                server_handles = []
+            else:
+                server_handles = [raw_server_handles]
+
+            if not server_handles:
+                raise ValueError(f"No server handles configured for canonical policy '{policy_name}'")
+
+            manager_config = OmegaConf.create({"policy_name": policy_name})
+            manager_dict[policy_name] = AsyncLLMServerManager(manager_config, server_handles)
+
+        return manager_dict
 
     def _select_backend_url(self, policy_name: str) -> str:
         addresses = self._server_address_dict.get(policy_name)

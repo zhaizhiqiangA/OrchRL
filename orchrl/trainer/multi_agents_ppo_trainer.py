@@ -172,6 +172,7 @@ class MultiAgentsPPOTrainer:
         self.checkpoint_manager_dict = {}
         self.tokenizer_dict = {}
         self.server_address_dict = {}
+        self.server_handle_dict = {}
         self.policy_server_name_mapping = {}
 
         for model_name, trainer in self.ppo_trainer_dict.items():
@@ -180,7 +181,9 @@ class MultiAgentsPPOTrainer:
             self.tokenizer_dict[model_name] = trainer.tokenizer
             rollout_engine = trainer.async_rollout_manager
             server_address_list = getattr(rollout_engine, "server_addresses", [])
+            server_handle_list = getattr(rollout_engine, "server_handles", [])
             self.server_address_dict[model_name] = server_address_list
+            self.server_handle_dict[model_name] = server_handle_list
             self.policy_server_name_mapping[model_name] = self._resolve_policy_server_name(model_name)
 
         self._init_mate_rollout_adapter()
@@ -204,6 +207,8 @@ class MultiAgentsPPOTrainer:
             prompt_loader=self.mate_prompt_loader,
             reward_provider=self.mate_reward_provider,
             server_address_dict=self.server_address_dict,
+            server_handle_dict=self.server_handle_dict,
+            tokenizer_dict=self.tokenizer_dict,
             role_policy_mapping=self.mate_config["role_policy_mapping"],
             policy_server_name_mapping=self.policy_server_name_mapping,
         )
@@ -229,6 +234,7 @@ class MultiAgentsPPOTrainer:
 
         role_names = list(self.agent_policy_mapping.keys()) if getattr(self, "agent_policy_mapping", None) else list(self.mate_config["role_policy_mapping"].keys())
         adapter_fn = tree_episodes_to_policy_batches if self._mate_rollout_mode() == "tree" else episodes_to_policy_batches
+        backend_mode = str(self.mate_config.get("backend_mode", "canonical"))
         return adapter_fn(
             episodes=episodes,
             tokenizer_dict=self.tokenizer_dict,
@@ -237,6 +243,7 @@ class MultiAgentsPPOTrainer:
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
             credit_assignment=self.mate_config.get("credit_assignment", self.mate_config.get("reward", {}).get("credit_assignment", "all_turns")),
+            backend_mode=backend_mode,
         )
 
     def _mate_rollout_mode(self) -> str:

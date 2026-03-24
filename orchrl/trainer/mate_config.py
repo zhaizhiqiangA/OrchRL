@@ -22,6 +22,7 @@ def validate_mate_config(mate_cfg: Any, agent_policy_mapping: Mapping[str, str] 
     roles = config_dict.get("roles")
     role_policy_mapping = config_dict.get("role_policy_mapping")
     rollout_mode = config_dict.get("rollout_mode", "parallel")
+    backend_mode = str(config_dict.get("backend_mode", "canonical"))
 
     if not isinstance(roles, list) or not roles:
         raise ValueError("mate.roles must be a non-empty list")
@@ -29,6 +30,8 @@ def validate_mate_config(mate_cfg: Any, agent_policy_mapping: Mapping[str, str] 
         raise ValueError("mate.role_policy_mapping must be a non-empty dict")
     if rollout_mode not in {"parallel", "tree"}:
         raise ValueError("mate.rollout_mode must be either 'parallel' or 'tree'")
+    if backend_mode not in {"http", "canonical"}:
+        raise ValueError("mate.backend_mode must be 'canonical' or 'http'")
 
     known_policies = set((agent_policy_mapping or {}).values())
     for role in roles:
@@ -52,4 +55,5 @@ def validate_mate_config(mate_cfg: Any, agent_policy_mapping: Mapping[str, str] 
         raise ValueError("mate.tree.max_concurrent_branches must be >= 1")
 
     config_dict["rollout_mode"] = rollout_mode
+    config_dict["backend_mode"] = backend_mode
     return config_dict

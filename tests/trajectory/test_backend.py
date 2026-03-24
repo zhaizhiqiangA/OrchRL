@@ -1,7 +1,7 @@
 import httpx
 import pytest
 
-from trajectory.backend import InferenceBackend, VLLMBackend
+from trajectory.backend import InferenceBackend, VLLMBackend, VerlBackend
 from trajectory.datatypes import ModelRequest, ModelResponse
 
 pytestmark = pytest.mark.asyncio
@@ -299,3 +299,67 @@ async def test_vllm_backend_logprobs_keeps_only_finite_numbers(monkeypatch):
     resp = await backend.generate(req)
 
     assert resp.logprobs == [-0.5, 2.0]
+
+
+async def test_verl_backend_requires_prompt_ids():
+    class FakeManager:
+        async def generate(self, request_id, prompt_ids, sampling_params):
+            raise AssertionError("generate should not be called when prompt_ids are missing")
+
+    backend = VerlBackend(server_manager=FakeManager())
+
+    with pytest.raises(ValueError, match="prompt_ids"):
+        await backend.generate(
+            ModelRequest(
+                request_id="r1",
+                agent_role="verifier",
+                messages=[{"role": "user", "content": "q"}],
+                generation_params={},
+            )
+        )
+
+
+async def test_verl_backend_routes_by_generation_model_and_decodes_with_policy_tokenizer():
+    captured: dict[str, object] = {}
+
+    class FakeManager:
+        async def generate(self, request_id, prompt_ids, sampling_params):
+            captured["request_id"] = request_id
+            captured["prompt_ids"] = list(prompt_ids)
+            captured["sampling_params"] = dict(sampling_params)
+
+            class _Output:
+                token_ids = [7, 8]
+                log_probs = [-0.1, -0.2]
+                stop_reason = "stop"
+                text = ""
+                routed_experts = None
+
+            return _Output()
+
+    class FakeTokenizer:
+        def decode(self, token_ids, skip_special_tokens=True):
+            return f"decoded:{','.join(str(token_id) for token_id in token_ids)}"
+
+    backend = VerlBackend(
+        policy_to_manager={"policy_a": FakeManager()},
+        policy_to_tokenizer={"policy_a": FakeTokenizer()},
+        policy_to_actual_model={"policy_a": "served-policy-a"},
+    )
+    resp = await backend.generate(
+        ModelRequest(
+            request_id="r1",
+            agent_role="verifier",
+            messages=[{"role": "user", "content": "q"}],
+            generation_params={"model": "served-policy-a", "temperature": 0.3},
+            prompt_ids=[101, 102],
+            render_fingerprint={"tokenizer_class": "FakeTokenizer"},
+            sampling_fingerprint={"temperature": 0.3},
+        )
+    )
+
+    assert captured["request_id"] == "r1"
+    assert captured["prompt_ids"] == [101, 102]
+    assert captured["sampling_params"] == {"temperature": 0.3, "logprobs": True}
+    assert resp.content == "decoded:7,8"
+    assert resp.prompt_ids == [101, 102]

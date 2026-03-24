@@ -57,3 +57,14 @@ def test_validate_mate_config_rejects_invalid_tree_branch_settings() -> None:
             config,
             {"verifier": "policy_a", "searcher": "policy_b"},
         )
+
+
+def test_validate_mate_config_rejects_unknown_backend_mode() -> None:
+    config = _base_config()
+    config["backend_mode"] = "bogus"
+
+    with pytest.raises(ValueError, match="backend_mode"):
+        validate_mate_config(
+            config,
+            {"verifier": "policy_a", "searcher": "policy_b"},
+        )

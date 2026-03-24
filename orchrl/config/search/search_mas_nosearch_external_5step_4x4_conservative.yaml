@@ -9,7 +9,7 @@ training:
   logger:
   - console
   model_checkpoints_dir: checkpoints/search_mas_train_5x4x4_conservative
-  train_batch_size: 4
+  train_batch_size: 2
   train_sample_num: 4
   validate_sample_num: 1
   val_freq: 9999

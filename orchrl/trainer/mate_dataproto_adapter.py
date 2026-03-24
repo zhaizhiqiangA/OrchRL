@@ -18,6 +18,7 @@ def episodes_to_policy_batches(
     max_response_length,
     role_index_mapping=None,
     credit_assignment="all_turns",
+    backend_mode="canonical",
 ):
     records_by_policy: dict[str, list[dict[str, Any]]] = defaultdict(list)
     role_index_mapping = dict(role_index_mapping or {role: idx for idx, role in enumerate(role_policy_mapping.keys())})
@@ -33,6 +34,7 @@ def episodes_to_policy_batches(
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
             credit_assignment=credit_assignment,
+            backend_mode=backend_mode,
             uid_factory=lambda *, prompt_group_id, agent_idx, **_: f"{prompt_group_id}:{agent_idx}",
         )
 
@@ -48,6 +50,7 @@ def tree_episodes_to_policy_batches(
     max_response_length,
     role_index_mapping=None,
     credit_assignment="all_turns",
+    backend_mode="canonical",
 ):
     records_by_policy: dict[str, list[dict[str, Any]]] = defaultdict(list)
     role_index_mapping = dict(role_index_mapping or {role: idx for idx, role in enumerate(role_policy_mapping.keys())})
@@ -63,6 +66,7 @@ def tree_episodes_to_policy_batches(
             max_prompt_length=max_prompt_length,
             max_response_length=max_response_length,
             credit_assignment=credit_assignment,
+            backend_mode=backend_mode,
             uid_factory=lambda *, prompt_group_id, agent_idx, **_: f"{prompt_group_id}:{agent_idx}",
         )
 
@@ -80,6 +84,7 @@ def tree_episodes_to_policy_batches(
                 max_prompt_length=max_prompt_length,
                 max_response_length=max_response_length,
                 credit_assignment=credit_assignment,
+                backend_mode=backend_mode,
                 uid_factory=lambda *, prompt_group_id, agent_idx, global_turn_index, **_: _tree_uid(
                     prompt_group_id=prompt_group_id,
                     agent_idx=agent_idx,
@@ -119,6 +124,7 @@ def _append_episode_records(
     max_prompt_length: int,
     max_response_length: int,
     credit_assignment: str,
+    backend_mode: str,
     uid_factory,
     skip_turn_predicate=None,
     global_turn_index_lookup=None,
@@ -150,7 +156,12 @@ def _append_episode_records(
             ):
                 continue
 
-            prompt_ids = _tokenize_messages(tokenizer, turn.messages, max_prompt_length)
+            prompt_ids = _resolve_prompt_ids(
+                turn=turn,
+                tokenizer=tokenizer,
+                max_prompt_length=max_prompt_length,
+                backend_mode=backend_mode,
+            )
             response_ids = _normalize_response_ids(turn.token_ids, max_response_length)
             records_by_policy[policy_name].append(
                 {
@@ -191,6 +202,33 @@ def _tree_uid(*, prompt_group_id: str, agent_idx: int, branch_turn: int, global_
     if global_turn_index == branch_turn:
         return f"{prompt_group_id}:{agent_idx}:b{branch_turn}"
     return f"{prompt_group_id}:{agent_idx}:b{branch_turn}:t{global_turn_index}"
+
+
+def _resolve_prompt_ids(*, turn, tokenizer, max_prompt_length: int, backend_mode: str) -> list[int]:
+    prompt_ids = _normalize_prompt_ids(turn.prompt_ids, max_prompt_length)
+    if prompt_ids is not None:
+        return prompt_ids
+    if backend_mode == "http":
+        return _tokenize_messages(tokenizer, turn.messages, max_prompt_length)
+    raise ValueError(
+        "TurnData.prompt_ids must be populated for canonical MATE training "
+        f"(agent_role={turn.agent_role}, turn_index={turn.turn_index})"
+    )
+
+
+def _normalize_prompt_ids(prompt_ids, max_prompt_length: int) -> list[int] | None:
+    if prompt_ids is None:
+        return None
+    if isinstance(prompt_ids, torch.Tensor):
+        prompt_ids = prompt_ids.tolist()
+    elif hasattr(prompt_ids, "tolist"):
+        prompt_ids = prompt_ids.tolist()
+    if not isinstance(prompt_ids, list):
+        raise TypeError("TurnData.prompt_ids must be a list of token ids when provided")
+    normalized = [int(token_id) for token_id in prompt_ids][-max_prompt_length:]
+    if not normalized:
+        raise ValueError("TurnData.prompt_ids must contain at least one token when provided")
+    return normalized
 
 
 def _tokenize_messages(tokenizer, messages, max_prompt_length: int) -> list[int]:

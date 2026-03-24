@@ -4,6 +4,7 @@ import httpx
 import pytest
 import pytest_asyncio
 
+from trajectory import ChatRenderer
 from trajectory.backend import InferenceBackend
 from trajectory.datatypes import ModelMappingEntry, ModelRequest, ModelResponse
 from trajectory.monitor import ModelMonitor
@@ -278,5 +279,49 @@ async def test_clear_buffer_drops_inflight_response_after_clear():
 
         assert response.status_code == 200
         assert monitor.get_buffer() == []
+    finally:
+        await monitor.stop()
+
+
+async def test_uses_role_specific_renderer_mapping():
+    class RecordingRenderer(ChatRenderer):
+        def __init__(self, prompt_ids):
+            self._prompt_ids = list(prompt_ids)
+
+        def render(self, messages, *, add_generation_prompt):
+            return list(self._prompt_ids), {
+                "add_generation_prompt": add_generation_prompt,
+                "tokenizer_class": "RecordingRenderer",
+            }
+
+    mapping = {
+        "verifier": ModelMappingEntry(actual_model="m1"),
+        "searcher": ModelMappingEntry(actual_model="m2"),
+    }
+    backend = RecordingBackend()
+    monitor = ModelMonitor(
+        backend=backend,
+        model_mapping=mapping,
+        renderer={
+            "verifier": RecordingRenderer([11, 22]),
+            "searcher": RecordingRenderer([33, 44, 55]),
+        },
+    )
+    port = await monitor.start()
+    try:
+        async with httpx.AsyncClient() as client:
+            verifier_response = await client.post(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                json={"model": "verifier", "messages": [{"role": "user", "content": "q1"}]},
+            )
+            searcher_response = await client.post(
+                f"http://127.0.0.1:{port}/v1/chat/completions",
+                json={"model": "searcher", "messages": [{"role": "user", "content": "q2"}]},
+            )
+
+        assert verifier_response.status_code == 200
+        assert searcher_response.status_code == 200
+        assert backend.requests[0].prompt_ids == [11, 22]
+        assert backend.requests[1].prompt_ids == [33, 44, 55]
     finally:
         await monitor.stop()

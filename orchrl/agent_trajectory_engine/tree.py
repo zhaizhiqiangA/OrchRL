@@ -6,7 +6,7 @@ import logging
 from .backend import InferenceBackend
 from .datatypes import BranchResult, InteractionRecord, TreeEpisodeResult
 from .pipe import AgentPipe, AgentPipeConfig
-from .replay_cache import ReplayCache
+from ._support.replay_cache import ReplayCache
 from .reward import RewardProvider
 
 _LOGGER = logging.getLogger(__name__)
@@ -76,6 +76,8 @@ async def tree_rollout(
             if branch_result.status != "success":
                 return None
 
+            _annotate_branch_result(branch_result, branch_turn=global_position)
+
             return BranchResult(
                 episode_result=branch_result,
                 branch_turn=global_position,
@@ -111,3 +113,28 @@ async def tree_rollout(
 
 def _sorted_buffer(buffer: list[InteractionRecord]) -> list[InteractionRecord]:
     return sorted(buffer, key=lambda record: record.timestamp)
+
+
+def _annotate_branch_result(result, branch_turn: int) -> None:
+    all_turns = [
+        turn
+        for turns in result.trajectory.agent_trajectories.values()
+        for turn in turns
+    ]
+    ordered_turns = sorted(all_turns, key=lambda turn: turn.timestamp)
+
+    for idx, turn in enumerate(ordered_turns):
+        if idx < branch_turn:
+            replayed = True
+            branch_phase = "replay_prefix"
+        elif idx == branch_turn:
+            replayed = False
+            branch_phase = "branch_point"
+        else:
+            replayed = False
+            branch_phase = "post_branch"
+
+        turn.replayed = replayed
+        turn.branch_phase = branch_phase
+        turn.metadata["replayed"] = replayed
+        turn.metadata["branch_phase"] = branch_phase

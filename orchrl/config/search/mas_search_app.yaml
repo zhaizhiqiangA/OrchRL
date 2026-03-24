@@ -9,7 +9,7 @@ lora_rank: 0
 lora_alpha: 16
 resource:
   nnodes: 1
-  n_gpus_per_node: 3
+  n_gpus_per_node: 6
   trust_remote_code: true
 env:
   name: search_env
@@ -67,30 +67,33 @@ agent_policy_configs:
 base_models:
   policy_0:
     path: /data1/lll/models/Qwen3-0.6B
+    # path: /data1/models/Qwen/Qwen3-4B-Instruct-2507
     name: verifier_model
   policy_1:
     path: /data1/lll/models/Qwen3-0.6B
+    # path: /data1/models/Qwen/Qwen3-4B-Instruct-2507
     name: searcher_model
   policy_2:
     path: /data1/lll/models/Qwen3-0.6B
+    # path: /data1/models/Qwen/Qwen3-4B-Instruct-2507
     name: answerer_model
 training:
   rollout_source: mate
   device: cuda
-  total_training_steps: 100
+  total_training_steps: 10
   project_name: orchrl
-  experiment_name: search_mas_nosearch_external
+  experiment_name: search_mas_app
   logger:
   - console
-  model_checkpoints_dir: checkpoints/search_mas_nosearch_external
+  model_checkpoints_dir: checkpoints/search_mas_app
   ray_wait_register_center_timeout: 300
   train_batch_size: 2
-  train_sample_num: 4
+  train_sample_num: 3
   validate_sample_num: 1
   sample_temperature: 0.6
   val_freq: 50
-  max_prompt_length: 4096
-  max_response_length: 4096
+  max_prompt_length: 2048
+  max_response_length: 2048
   lora_rank: ${lora_rank}
   lora_alpha: ${lora_alpha}
   mate:
@@ -100,10 +103,12 @@ training:
       searcher: searcher_model
       answerer: answerer_model
     batch_size: ${training.train_batch_size}
-    n_samples_per_prompt: ${training.train_sample_num}
-    rollout_mode: parallel
+    # n_samples_per_prompt: ${training.train_sample_num}
+    n_samples_per_prompt: 1
+    backend_mode: canonical  # canonical (token-in and token-out) | http (text-in and text-out)
+    rollout_mode: tree # tree | parallel
     tree:
-      k_branches: 3
+      k_branches: 2
       max_concurrent_branches: 2
     max_concurrent_episodes: 2
     timeout: 120
@@ -111,7 +116,7 @@ training:
     credit_assignment: all_turns
     mas_work_dir: examples/mas_app/search
     mas_command_template: python scripts/run_search_mas.py --config {config_path} --question {prompt}
-    config_template_path: examples/mas_app/search/configs/search_mas_real_nosearch.yaml
+    config_template_path: examples/mas_app/search/configs/search_mas_app.yaml
     prompt_loader:
       source_type: parquet
       path: /data1/zzh/mas_app/search/data/drmas_search_mas/test_sampled.parquet
@@ -140,10 +145,10 @@ models:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}
           response_length: ${training.max_response_length}
-          tensor_model_parallel_size: 1
+          tensor_model_parallel_size: 2
         trainer:
-          n_gpus_per_node: 1
-          n_training_gpus_per_node: 1
+          n_gpus_per_node: 2
+          n_training_gpus_per_node: 2
   model_1:
     path: ${base_models.policy_1.path}
     name: ${base_models.policy_1.name}
@@ -164,10 +169,10 @@ models:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}
           response_length: ${training.max_response_length}
-          tensor_model_parallel_size: 1
+          tensor_model_parallel_size: 2
         trainer:
-          n_gpus_per_node: 1
-          n_training_gpus_per_node: 1
+          n_gpus_per_node: 2
+          n_training_gpus_per_node: 2
   model_2:
     path: ${base_models.policy_2.path}
     name: ${base_models.policy_2.name}
@@ -188,7 +193,7 @@ models:
           temperature: ${training.sample_temperature}
           prompt_length: ${training.max_prompt_length}
           response_length: ${training.max_response_length}
-          tensor_model_parallel_size: 1
+          tensor_model_parallel_size: 2
         trainer:
-          n_gpus_per_node: 1
-          n_training_gpus_per_node: 1
+          n_gpus_per_node: 2
+          n_training_gpus_per_node: 2
